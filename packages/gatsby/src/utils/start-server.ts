@@ -1,5 +1,3 @@
-import chokidar from "chokidar"
-
 import webpackHotMiddleware from "webpack-hot-middleware"
 import webpackDevMiddleware, {
   WebpackDevMiddleware,
@@ -12,17 +10,17 @@ import graphqlHTTP from "express-graphql"
 import graphqlPlayground from "graphql-playground-middleware-express"
 import graphiqlExplorer from "gatsby-graphiql-explorer"
 import { formatError } from "graphql"
-import telemetry from "gatsby-telemetry"
 import http from "http"
 import https from "https"
+import cors from "cors"
+import telemetry from "gatsby-telemetry"
+import launchEditor from "react-dev-utils/launchEditor"
+import { isCI } from "gatsby-core-utils"
 
+import { withBasePath } from "../utils/path"
 import webpackConfig from "../utils/webpack.config"
 import { store, emitter } from "../redux"
-import { buildHTML } from "../commands/build-html"
-import { withBasePath } from "../utils/path"
 import report from "gatsby-cli/lib/reporter"
-import launchEditor from "react-dev-utils/launchEditor"
-import cors from "cors"
 import * as WorkerPool from "../utils/worker/pool"
 import {
   showExperimentNoticeAfterTimeout,
@@ -39,7 +37,6 @@ import {
 } from "./page-data"
 import { getPageData as getPageDataExperimental } from "./get-page-data"
 import { findPageByPath } from "./find-page-by-path"
-import { slash, isCI } from "gatsby-core-utils"
 import apiRunnerNode from "../utils/api-runner-node"
 import { Express } from "express"
 import * as path from "path"
@@ -78,10 +75,16 @@ export async function startServer(
   app: Express,
   workerPool: JestWorker = WorkerPool.create()
 ): Promise<IServer> {
-  const indexHTMLActivity = report.phantomActivity(`building index.html`, {})
-  indexHTMLActivity.start()
   const directory = program.directory
+
+  const webpackActivity = report.activityTimer(`Building development bundle`, {
+    id: `webpack-develop`,
+  })
+  webpackActivity.start()
+
+  // Remove the following when merging GATSBY_EXPERIMENTAL_DEV_SSR
   const directoryPath = withBasePath(directory)
+  const { buildHTML } = require(`../commands/build-html`)
   const createIndexHtml = async (activity: ActivityTracker): Promise<void> => {
     try {
       await buildHTML({
@@ -99,30 +102,32 @@ export async function startServer(
       report.panic(
         report.stripIndent`
           There was an error compiling the html.js component for the development server.
-
           See our docs page on debugging HTML builds for help https://gatsby.dev/debug-html
         `,
         err
       )
     }
   }
+  const indexHTMLActivity = report.phantomActivity(`building index.html`, {})
 
-  await createIndexHtml(indexHTMLActivity)
+  if (process.env.GATSBY_EXPERIMENTAL_DEV_SSR) {
+    const { buildRenderer } = require(`../commands/build-html`)
+    await buildRenderer(program, Stage.DevelopHTML)
+    const { initDevWorkerPool } = require(`./dev-ssr/render-dev-html`)
+    initDevWorkerPool()
+  } else {
+    indexHTMLActivity.start()
 
-  indexHTMLActivity.end()
+    await createIndexHtml(indexHTMLActivity)
 
-  // report.stateUpdate(`webpack`, `IN_PROGRESS`)
-
-  const webpackActivity = report.activityTimer(`Building development bundle`, {
-    id: `webpack-develop`,
-  })
-  webpackActivity.start()
+    indexHTMLActivity.end()
+  }
 
   const TWENTY_SECONDS = 20 * 1000
   let cancelDevJSNotice: CancelExperimentNoticeCallbackOrUndefined
   if (
     process.env.gatsby_executing_command === `develop` &&
-    !process.env.GATSBY_EXPERIMENT_DEVJS_LAZY &&
+    !process.env.GATSBY_EXPERIMENTAL_LAZY_DEVJS &&
     !isCI()
   ) {
     cancelDevJSNotice = showExperimentNoticeAfterTimeout(
@@ -134,7 +139,7 @@ Your friendly Gatsby maintainers detected your site takes longer than ideal to b
 
 If you're interested in trialing out one of these future improvements *today* which should make your local development experience faster, go ahead and run your site with LAZY_DEVJS enabled.
 
-GATSBY_EXPERIMENT_DEVJS_LAZY=true gatsby develop
+GATSBY_EXPERIMENTAL_LAZY_DEVJS=true gatsby develop
 
 Please do let us know how it goes (good, bad, or otherwise) at https://gatsby.dev/lazy-devjs-umbrella
       `),
@@ -151,6 +156,66 @@ Please do let us know how it goes (good, bad, or otherwise) at https://gatsby.de
   )
 
   const compiler = webpack(devConfig)
+
+  if (process.env.GATSBY_EXPERIMENTAL_LAZY_DEVJS) {
+    const bodyParser = require(`body-parser`)
+    const { boundActionCreators } = require(`../redux/actions`)
+    const { createClientVisitedPage } = boundActionCreators
+    // Listen for the client marking a page as visited (meaning we need to
+    // compile its page component.
+    const chunkCalls = new Set()
+    app.post(`/___client-page-visited`, bodyParser.json(), (req, res, next) => {
+      if (req.body?.chunkName) {
+        // Ignore all but the first POST.
+        if (!chunkCalls.has(req.body.chunkName)) {
+          // Tell Gatsby there's a new page component to trigger it
+          // being added to the bundle.
+          createClientVisitedPage(req.body.chunkName)
+
+          // Tell Gatsby to rewrite the page data for the pages
+          // owned by this component to update it to say that
+          // its page component is now part of the dev bundle.
+          // The pages will be rewritten after the webpack compilation
+          // finishes.
+          //
+          // Set a timeout to ensure the webpack compile of the new page
+          // component triggered above has time to go through.
+          setTimeout(() => {
+            // Find the component page for this componentChunkName.
+            const pages = store.getState().pages
+            function getByChunkName(map, searchValue): void | string {
+              for (const [key, value] of map.entries()) {
+                if (value.componentChunkName === searchValue) return key
+              }
+
+              return undefined
+            }
+            const pageKey = getByChunkName(pages, req.body.chunkName)
+
+            if (pageKey) {
+              const page = pages.get(pageKey)
+              if (page) {
+                store.dispatch({
+                  type: `ADD_PENDING_TEMPLATE_DATA_WRITE`,
+                  payload: {
+                    pages: [
+                      {
+                        componentPath: page.component,
+                      },
+                    ],
+                  },
+                })
+              }
+            }
+            chunkCalls.add(req.body.chunkName)
+          }, 20)
+        }
+        res.send(`ok`)
+      } else {
+        next()
+      }
+    })
+  }
 
   /**
    * Set up the express app.
@@ -358,12 +423,46 @@ Please do let us know how it goes (good, bad, or otherwise) at https://gatsby.de
   })
 
   // Render an HTML page and serve it.
-  app.use((_, res) => {
-    res.sendFile(directoryPath(`public/index.html`), err => {
-      if (err) {
-        res.status(500).end()
+  if (process.env.GATSBY_EXPERIMENTAL_DEV_SSR) {
+    // Setup HTML route.
+    const { route } = require(`./dev-ssr/develop-html-route`)
+    route({ app, program, store })
+  }
+
+  app.use(async (req, res) => {
+    const fullUrl = req.protocol + `://` + req.get(`host`) + req.originalUrl
+    // This isn't used in development.
+    if (fullUrl.endsWith(`app-data.json`)) {
+      res.json({ webpackCompilationHash: `123` })
+      // If this gets here, it's a non-existant file so just send back 404.
+    } else if (fullUrl.endsWith(`.json`)) {
+      res.json({}).status(404)
+    } else {
+      if (process.env.GATSBY_EXPERIMENTAL_DEV_SSR) {
+        try {
+          const { renderDevHTML } = require(`./dev-ssr/render-dev-html`)
+          const renderResponse = await renderDevHTML({
+            path: `/dev-404-page/`,
+            // Let renderDevHTML figure it out.
+            page: undefined,
+            store,
+            htmlComponentRendererPath: `${program.directory}/public/render-page.js`,
+            directory: program.directory,
+          })
+          const status = process.env.GATSBY_EXPERIMENTAL_DEV_SSR ? 404 : 200
+          res.status(status).send(renderResponse)
+        } catch (e) {
+          report.error(e)
+          res.send(e).status(500)
+        }
+      } else {
+        res.sendFile(directoryPath(`public/index.html`), err => {
+          if (err) {
+            res.status(500).end()
+          }
+        })
       }
-    })
+    }
   })
 
   /**
@@ -377,16 +476,20 @@ Please do let us know how it goes (good, bad, or otherwise) at https://gatsby.de
   // in http proxy in `develop-proxy`
   const listener = server.listen(program.port, `localhost`)
 
-  // Register watcher that rebuilds index.html every time html.js changes.
-  const watchGlobs = [`src/html.js`, `plugins/**/gatsby-ssr.js`].map(path =>
-    slash(directoryPath(path))
-  )
+  if (!process.env.GATSBY_EXPERIMENTAL_DEV_SSR) {
+    const chokidar = require(`chokidar`)
+    const { slash } = require(`gatsby-core-utils`)
+    // Register watcher that rebuilds index.html every time html.js changes.
+    const watchGlobs = [`src/html.js`, `plugins/**/gatsby-ssr.js`].map(path =>
+      slash(directoryPath(path))
+    )
 
-  chokidar.watch(watchGlobs).on(`change`, async () => {
-    await createIndexHtml(indexHTMLActivity)
-    // eslint-disable-next-line no-unused-expressions
-    socket?.to(`clients`).emit(`reload`)
-  })
+    chokidar.watch(watchGlobs).on(`change`, async () => {
+      await createIndexHtml(indexHTMLActivity)
+      // eslint-disable-next-line no-unused-expressions
+      socket?.to(`clients`).emit(`reload`)
+    })
+  }
 
   return {
     compiler,
