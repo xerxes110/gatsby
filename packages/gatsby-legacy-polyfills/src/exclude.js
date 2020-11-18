@@ -81,6 +81,9 @@ module.exports = {
   CORE_JS_POLYFILL_EXCLUDE_LIST: [
     ...listOfLegacyPolyfills,
     `es.object.assign`,
+    // These are included again because of a bug (https://togithub.com/zloirock/core-js/issues/766)
+    `es.array.reduce`,
+    `es.array.reduce-right`,
 
     // These are added by default as the check in babel-preset-env isn't thorough enough
     // ex if .forEach is used it adds a bunch of iterator polyfills even if it has nothing to do with that
