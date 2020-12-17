@@ -75,106 +75,106 @@ export async function startWebpackServer({
   let isFirstCompile = true
 
   return new Promise(resolve => {
-    compiler.hooks.done.tapAsync(`print gatsby instructions`, async function (
-      stats,
-      done
-    ) {
-      if (cancelDevJSNotice) {
-        cancelDevJSNotice()
-      }
-
-      // "done" event fires when Webpack has finished recompiling the bundle.
-      // Whether or not you have warnings or errors, you will get this event.
-
-      // We have switched off the default Webpack output in WebpackDevServer
-      // options so we are going to "massage" the warnings and errors and present
-      // them in a readable focused way.
-      const messages = formatWebpackMessages(stats.toJson({}, true))
-      const urls = prepareUrls(
-        program.https ? `https` : `http`,
-        program.host,
-        program.proxyPort
-      )
-      const isSuccessful = !messages.errors.length
-
-      if (isSuccessful && isFirstCompile) {
-        // Show notices to users about potential experiments/feature flags they could
-        // try.
-        showExperimentNotices()
-        printInstructions(
-          program.sitePackageJson.name || `(Unnamed package)`,
-          urls
-        )
-        printDeprecationWarnings()
-        if (program.open) {
-          try {
-            await openurl(urls.localUrlForBrowser)
-          } catch {
-            console.log(
-              `${chalk.yellow(
-                `warn`
-              )} Browser not opened because no browser was found`
-            )
-          }
+    compiler.hooks.done.tapAsync(
+      `print gatsby instructions`,
+      async function (stats, done) {
+        if (cancelDevJSNotice) {
+          cancelDevJSNotice()
         }
-      }
 
-      isFirstCompile = false
+        // "done" event fires when Webpack has finished recompiling the bundle.
+        // Whether or not you have warnings or errors, you will get this event.
 
-      if (webpackActivity) {
-        reportWebpackWarnings(stats)
+        // We have switched off the default Webpack output in WebpackDevServer
+        // options so we are going to "massage" the warnings and errors and present
+        // them in a readable focused way.
+        const messages = formatWebpackMessages(stats.toJson({}, true))
+        const urls = prepareUrls(
+          program.https ? `https` : `http`,
+          program.host,
+          program.proxyPort
+        )
+        const isSuccessful = !messages.errors.length
 
-        if (!isSuccessful) {
-          const errors = structureWebpackErrors(
-            Stage.Develop,
-            stats.compilation.errors
+        if (isSuccessful && isFirstCompile) {
+          // Show notices to users about potential experiments/feature flags they could
+          // try.
+          showExperimentNotices()
+          printInstructions(
+            program.sitePackageJson.name || `(Unnamed package)`,
+            urls
           )
-          webpackActivity.panicOnBuild(errors)
-        }
-        webpackActivity.end()
-        webpackActivity = null
-      }
-
-      if (isSuccessful) {
-        const state = store.getState()
-        const mapOfTemplatesToStaticQueryHashes = mapTemplatesToStaticQueryHashes(
-          state,
-          stats.compilation
-        )
-
-        mapOfTemplatesToStaticQueryHashes.forEach(
-          (staticQueryHashes, componentPath) => {
-            if (
-              !isEqual(
-                state.staticQueriesByTemplate.get(componentPath),
-                staticQueryHashes
+          printDeprecationWarnings()
+          if (program.open) {
+            try {
+              await openurl(urls.localUrlForBrowser)
+            } catch {
+              console.log(
+                `${chalk.yellow(
+                  `warn`
+                )} Browser not opened because no browser was found`
               )
-            ) {
-              store.dispatch({
-                type: `ADD_PENDING_TEMPLATE_DATA_WRITE`,
-                payload: {
-                  componentPath,
-                  pages: state.components.get(componentPath)?.pages ?? [],
-                },
-              })
-              store.dispatch({
-                type: `SET_STATIC_QUERIES_BY_TEMPLATE`,
-                payload: {
-                  componentPath,
-                  staticQueryHashes,
-                },
-              })
             }
           }
-        )
+        }
 
-        enqueueFlush()
+        isFirstCompile = false
+
+        if (webpackActivity) {
+          reportWebpackWarnings(stats)
+
+          if (!isSuccessful) {
+            const errors = structureWebpackErrors(
+              Stage.Develop,
+              stats.compilation.errors
+            )
+            webpackActivity.panicOnBuild(errors)
+          }
+          webpackActivity.end()
+          webpackActivity = null
+        }
+
+        if (isSuccessful) {
+          const state = store.getState()
+          const mapOfTemplatesToStaticQueryHashes = mapTemplatesToStaticQueryHashes(
+            state,
+            stats.compilation
+          )
+
+          mapOfTemplatesToStaticQueryHashes.forEach(
+            (staticQueryHashes, componentPath) => {
+              if (
+                !isEqual(
+                  state.staticQueriesByTemplate.get(componentPath),
+                  staticQueryHashes
+                )
+              ) {
+                store.dispatch({
+                  type: `ADD_PENDING_TEMPLATE_DATA_WRITE`,
+                  payload: {
+                    componentPath,
+                    pages: state.components.get(componentPath)?.pages ?? [],
+                  },
+                })
+                store.dispatch({
+                  type: `SET_STATIC_QUERIES_BY_TEMPLATE`,
+                  payload: {
+                    componentPath,
+                    staticQueryHashes,
+                  },
+                })
+              }
+            }
+          )
+
+          enqueueFlush()
+        }
+
+        markWebpackStatusAsDone()
+        done()
+        emitter.emit(`COMPILATION_DONE`, stats)
+        resolve({ compiler, websocketManager, webpackWatching })
       }
-
-      markWebpackStatusAsDone()
-      done()
-      emitter.emit(`COMPILATION_DONE`, stats)
-      resolve({ compiler, websocketManager, webpackWatching })
-    })
+    )
   })
 }

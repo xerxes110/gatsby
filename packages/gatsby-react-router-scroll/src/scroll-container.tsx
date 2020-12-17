@@ -27,9 +27,7 @@ interface IPropsWithContextAndLocation extends IProps {
 
 let hasNotWarnedDeprecation = true
 
-class ScrollContainerImplementation extends React.Component<
-  IPropsWithContextAndLocation
-> {
+class ScrollContainerImplementation extends React.Component<IPropsWithContextAndLocation> {
   constructor(props: IPropsWithContextAndLocation) {
     super(props)
 

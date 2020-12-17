@@ -239,10 +239,9 @@ function postIndexingMetaSetupLtLteGtGte(
 
   // These range checks never return `null` or `undefined` so filter those out
   // By filtering them out early, the sort should be faster. Could be ...
-  const entries: Array<[
-    FilterValue,
-    Array<IGatsbyNode>
-  ]> = entriesNullable.filter(([v]) => v != null) as Array<
+  const entries: Array<
+    [FilterValue, Array<IGatsbyNode>]
+  > = entriesNullable.filter(([v]) => v != null) as Array<
     [FilterValue, Array<IGatsbyNode>]
   >
 
